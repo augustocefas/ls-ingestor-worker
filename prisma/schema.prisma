@@ -1,0 +1,33 @@
+// prisma/schema.prisma
+// Banco CENTRAL MySQL — apenas leitura de nserie e tenants.
+// NÃO contém mais JobLog — movido para prisma/log.prisma (SQLite).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("CENTRAL_DB_URL")
+}
+
+// ── Tenants ───────────────────────────────────────────────────────
+model Tenant {
+  id     String   @id @db.VarChar(36)
+  data   Json
+  nserie Nserie[]
+
+  @@map("tenants")
+}
+
+// ── Nserie — liga número de série ao tenant ───────────────────────
+model Nserie {
+  id         String  @id @db.VarChar(36)
+  tenants_id String  @db.VarChar(36)
+  nserie     String  @unique @db.VarChar(32)
+  active     Boolean @default(true)
+  tenant     Tenant  @relation(fields: [tenants_id], references: [id])
+
+  @@index([tenants_id])
+  @@map("nserie")
+}

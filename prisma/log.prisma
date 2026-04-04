@@ -1,0 +1,33 @@
+// prisma/log.prisma
+// Banco MySQL dedicado para auditoria de jobs do ingestor.
+// Todos os workers e a API apontam para o mesmo banco.
+// Crie o banco antes: CREATE DATABASE ls_ingestor_logs;
+
+generator logClient {
+  provider = "prisma-client-js"
+  output   = "../node_modules/.prisma/log-client"
+}
+
+datasource logDb {
+  provider = "mysql"
+  url      = env("LOG_DB_URL")
+}
+
+model JobLog {
+  id           String    @id @default(cuid())
+  job_id       String
+  nserie       String    @logDb.VarChar(32)
+  tenant_id    String?   @logDb.VarChar(36)
+  status       String    @logDb.VarChar(20)
+  rows_total   Int       @default(0)
+  rows_ok      Int       @default(0)
+  rows_err     Int       @default(0)
+  error        String?   @logDb.Text
+  created_at   DateTime  @default(now())
+  processed_at DateTime?
+
+  @@index([job_id])
+  @@index([nserie])
+  @@index([status])
+  @@map("job_logs")
+}

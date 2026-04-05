@@ -17,8 +17,7 @@ export const config = {
   },
 
   db: {
-    provider:   'mysql' as const,   // deve coincidir com o provider no schema.prisma
-    centralUrl: requireEnv('CENTRAL_DB_URL'),
+    provider: 'mysql' as const,
   },
 
   worker: {

@@ -14,8 +14,10 @@ export function createBoardRouter(): Router {
   serverAdapter.setBasePath(config.board.path)
 
   // ── Registra as filas no painel ───────────────────────────────
+  // BullMQAdapter pode ter incompatibilidade de tipo com versões mais novas
+  // do bullmq — o cast para any garante a build sem afetar o comportamento.
   createBullBoard({
-    queues:        [new BullMQAdapter(telemetryQueue)],
+    queues:        [new BullMQAdapter(telemetryQueue) as any],
     serverAdapter,
   })
 

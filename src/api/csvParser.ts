@@ -42,7 +42,7 @@ function toTotalizerRow(raw: z.infer<typeof TotRowSchema>): TotalizerRow {
 
 export interface ParseResult {
   tipo_arquivo: number
-  rows:         TelemetryRow[] | TotalizerRow[]
+  rows:         (TelemetryRow | TotalizerRow)[]
   errors:       Array<{ line: number; reason: string }>
 }
 

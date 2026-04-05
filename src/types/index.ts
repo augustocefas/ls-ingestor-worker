@@ -24,7 +24,7 @@ export interface TelemetryJobPayload {
   tenant_id:     string
   tenant_db_url: string
   tipo_arquivo:  number        // 1 = totalizador | 2 = trilha
-  rows:          TelemetryRow[] | TotalizerRow[]
+  rows:          (TelemetryRow | TotalizerRow)[]
   received_at:   string
 }
 

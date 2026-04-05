@@ -5,22 +5,19 @@ import { getCentralDb, getTenantDb } from '../db'
 import { getLogDb } from '../db/logDb'
 import { redisConnection } from '../jobs/telemetryQueue'
 import { config } from '../config'
-import type { TelemetryJobPayload, JobResult, TelemetryRow } from '../types'
+import type { TelemetryJobPayload, JobResult, TelemetryRow, TotalizerRow } from '../types'
 
-// ── Processador do job ────────────────────────────────────────────
+// ── Processador principal ─────────────────────────────────────────
 async function processTelemetryJob(
   job: Job<TelemetryJobPayload>,
 ): Promise<JobResult> {
-  const { upload_id, nserie, tenant_id, tenant_db_url, rows } = job.data
+  const { upload_id, nserie, tenant_id, tenant_db_url, tipo_arquivo, rows } = job.data
 
-  console.log(`[Worker] Job ${upload_id} | nserie=${nserie} | ${rows.length} linhas`)
+  console.log(`[Worker] Job ${upload_id} | nserie=${nserie} | tipo=${tipo_arquivo} | ${rows.length} linhas`)
 
-  // ── 1. Obtém cliente do banco do tenant ───────────────────────
   const tenantDb = getTenantDb(tenant_id, tenant_db_url)
 
-  // ── 2. Busca equipamento_id no banco do tenant via SQL nativo ─
-  // O banco do tenant é gerenciado pelo Laravel — sem schema Prisma próprio.
-  // Usamos $queryRaw para compatibilidade total com MySQL.
+  // ── Busca equipamento_id no banco do tenant ───────────────────
   const equipamentos = await tenantDb.$queryRaw<Array<{ id: string }>>`
     SELECT id FROM equipamento WHERE nserie = ${nserie} LIMIT 1
   `
@@ -34,7 +31,62 @@ async function processTelemetryJob(
 
   const equipamento_id = equipamentos[0].id
 
-  // ── 3. Insere em equipamento_mov em lotes de 500 ──────────────
+  // ── Roteia pelo tipo de arquivo ───────────────────────────────
+  if (tipo_arquivo === 1) {
+    return processTotalizer(job, tenantDb, equipamento_id, tenant_id, rows as TotalizerRow[])
+  }
+  return processTrack(job, tenantDb, equipamento_id, tenant_id, rows as TelemetryRow[])
+}
+
+// ── Processa totalizador (tipoArquivo=1) ──────────────────────────
+// Lê o último registro do CSV (maior totalizer_hours) e atualiza
+// o campo horimetro na tabela equipamento do tenant.
+async function processTotalizer(
+  job:            Job<TelemetryJobPayload>,
+  tenantDb:       PrismaClient,
+  equipamento_id: string,
+  tenant_id:      string,
+  rows:           TotalizerRow[],
+): Promise<JobResult> {
+  const { upload_id } = job.data
+
+  try {
+    // Pega o maior valor de horas do CSV (último registro enviado)
+    const maxHoras = Math.max(...rows.map(r => r.totalizer_hours))
+
+    // Converte horas decimais para milissegundos
+    const horimetro = Math.round(maxHoras * 3600 * 1000)
+
+    await tenantDb.$executeRaw`
+      UPDATE equipamento
+      SET    horimetro  = ${horimetro},
+             updated_at = NOW()
+      WHERE  id         = ${equipamento_id}
+    `
+
+    console.log(`[Worker] ${upload_id} — horimetro atualizado: ${horimetro}ms (${maxHoras.toFixed(6)}h)`)
+    await job.updateProgress(100)
+    await updateJobLog(upload_id, { status: 'success', rows_total: rows.length, rows_ok: 1, tenant_id })
+
+    return { rows_total: rows.length, rows_ok: 1, rows_err: 0, tenant_id }
+
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error(`[Worker] ${upload_id} — erro ao atualizar horimetro:`, msg)
+    await updateJobLog(upload_id, { status: 'failed', error: msg, rows_total: rows.length, rows_err: 1 })
+    return { rows_total: rows.length, rows_ok: 0, rows_err: 1, tenant_id }
+  }
+}
+
+// ── Processa trilha GPS (tipoArquivo=2) ───────────────────────────
+async function processTrack(
+  job:            Job<TelemetryJobPayload>,
+  tenantDb:       PrismaClient,
+  equipamento_id: string,
+  tenant_id:      string,
+  rows:           TelemetryRow[],
+): Promise<JobResult> {
+  const { upload_id } = job.data
   let rows_ok  = 0
   let rows_err = 0
   const errors: string[] = []
@@ -42,9 +94,8 @@ async function processTelemetryJob(
 
   for (let i = 0; i < rows.length; i += BATCH_SIZE) {
     const batch = rows.slice(i, i + BATCH_SIZE)
-
     try {
-      await insertBatch(tenantDb, equipamento_id, batch)
+      await insertTrackBatch(tenantDb, equipamento_id, batch)
       rows_ok += batch.length
     } catch (err) {
       rows_err += batch.length
@@ -52,54 +103,32 @@ async function processTelemetryJob(
       errors.push(`Lote ${Math.floor(i / BATCH_SIZE) + 1}: ${msg}`)
       console.error(`[Worker] ${upload_id} lote ${Math.floor(i / BATCH_SIZE) + 1}:`, msg)
     }
-
     await job.updateProgress(Math.round(((i + batch.length) / rows.length) * 100))
   }
 
-  // ── 4. Atualiza log de auditoria ──────────────────────────────
   const status = rows_err === 0 ? 'success' : rows_ok > 0 ? 'partial' : 'failed'
   await updateJobLog(upload_id, {
-    status,
-    rows_total: rows.length,
-    rows_ok,
-    rows_err,
+    status, rows_total: rows.length, rows_ok, rows_err, tenant_id,
     error: errors.length > 0 ? errors.join(' | ') : undefined,
-    tenant_id,
   })
 
-  console.log(`[Worker] Job ${upload_id} — ok=${rows_ok} err=${rows_err} status=${status}`)
-
+  console.log(`[Worker] ${upload_id} — ok=${rows_ok} err=${rows_err} status=${status}`)
   return { rows_total: rows.length, rows_ok, rows_err, tenant_id }
 }
 
-// ── Insere um lote em equipamento_mov via SQL nativo ─────────────
-// O banco do tenant é gerenciado pelo Laravel — sem schema Prisma próprio.
-// Mapeamento:
-//   timestamp  → created_at + updated_at
-//   lat        → latitude
-//   lon        → longitude
-//   speed_kmh  → data_float_0
-async function insertBatch(
+// ── Insert em lote em equipamento_mov ────────────────────────────
+async function insertTrackBatch(
   tenantDb:       PrismaClient,
   equipamento_id: string,
   batch:          TelemetryRow[],
 ): Promise<void> {
-  // Monta VALUES para INSERT em lote único
-  // Prisma $executeRaw com tagged template não aceita arrays dinâmicos,
-  // por isso usamos $executeRawUnsafe com parâmetros posicionais.
   const placeholders = batch.map(() => '(UUID(), ?, ?, ?, ?, ?, ?)').join(', ')
-
   const values: unknown[] = []
+
   for (const row of batch) {
-    const ts = new Date(row.timestamp).toISOString().slice(0, 19).replace('T', ' ')
-    values.push(
-      equipamento_id,
-      row.lat,
-      row.lng,
-      row.speed_kmh,  // → data_float_0
-      ts,             // → created_at
-      ts,             // → updated_at
-    )
+    // Converte timestamp do CSV para Unix timestamp em segundos
+    const unixSeconds = Math.floor(new Date(row.timestamp).getTime() / 1000)
+    values.push(equipamento_id, row.lat, row.lng, row.speed_kmh, unixSeconds, unixSeconds)
   }
 
   await tenantDb.$executeRawUnsafe(
@@ -110,7 +139,7 @@ async function insertBatch(
   )
 }
 
-// ── Atualiza JobLog no SQLite local ───────────────────────────────
+// ── Atualiza JobLog no MySQL de logs ──────────────────────────────
 async function updateJobLog(
   job_id: string,
   data: {
@@ -152,7 +181,7 @@ export function createTelemetryWorker() {
   )
 
   worker.on('completed', (job, result) => {
-    console.log(`[Worker] ✓ ${job.id} | tenant=${result.tenant_id} | ok=${result.rows_ok}`)
+    console.log(`[Worker] ✓ ${job.id} | tipo=${job.data.tipo_arquivo} | tenant=${result.tenant_id} | ok=${result.rows_ok}`)
   })
 
   worker.on('failed', (job, err) => {

@@ -53,7 +53,8 @@ router.post('/', upload.single('file'), async (req: Request, res: Response) => {
     }
 
     // ── 3. Parseia o CSV ──────────────────────────────────────
-    const { rows, errors } = await parseTelemetryCsv(req.file.buffer)
+    const tipo = parseInt(tipoArquivo ?? '2', 10)
+    const { rows, errors } = await parseTelemetryCsv(req.file.buffer, tipo)
 
     if (rows.length === 0) {
       res.status(422).json({
@@ -69,11 +70,12 @@ router.post('/', upload.single('file'), async (req: Request, res: Response) => {
 
     await enqueueTelemetry({
       upload_id,
-      nserie:       numeroSerie,
-      tenant_id:    tenant.tenantId,
+      nserie:        numeroSerie,
+      tenant_id:     tenant.tenantId,
       tenant_db_url: tenant.tenantDbUrl,
+      tipo_arquivo:  tipo,
       rows,
-      received_at:  new Date().toISOString(),
+      received_at:   new Date().toISOString(),
     })
 
     // Registra no log de auditoria (fire-and-forget)

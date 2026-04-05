@@ -1,6 +1,6 @@
 // src/types/index.ts
 
-// ── Linha do CSV de telemetria ────────────────────────────────────
+// ── Linha do CSV de trilha (tipoArquivo=2) ────────────────────────
 export interface TelemetryRow {
   timestamp:    string
   numero_serie: string
@@ -10,13 +10,21 @@ export interface TelemetryRow {
   nserie_item:  string
 }
 
+// ── Linha do CSV de totalizador (tipoArquivo=1) ───────────────────
+export interface TotalizerRow {
+  timestamp:       string
+  serial:          string
+  totalizer_hours: number
+}
+
 // ── Payload do job enfileirado no BullMQ ─────────────────────────
 export interface TelemetryJobPayload {
   upload_id:     string
   nserie:        string
-  tenant_id:     string   // tenants.id resolvido na rota
-  tenant_db_url: string   // connection string montada na rota
-  rows:          TelemetryRow[]
+  tenant_id:     string
+  tenant_db_url: string
+  tipo_arquivo:  number        // 1 = totalizador | 2 = trilha
+  rows:          TelemetryRow[] | TotalizerRow[]
   received_at:   string
 }
 

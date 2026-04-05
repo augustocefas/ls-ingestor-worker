@@ -2,20 +2,26 @@
 import { parse } from 'csv-parse'
 import { Readable } from 'stream'
 import { z } from 'zod'
-import type { TelemetryRow } from '../types'
+import type { TelemetryRow, TotalizerRow } from '../types'
 
-// ── Schema de validação de cada linha ────────────────────────────
-const RowSchema = z.object({
+// ── Schema: trilha GPS (tipoArquivo=2) ────────────────────────────
+const TrackRowSchema = z.object({
   timestamp:    z.string().min(1),
-  serial:       z.string().min(1),          // nome real no CSV do ESP32
+  serial:       z.string().min(1),
   lat:          z.coerce.number().min(-90).max(90),
-  lon:          z.coerce.number().min(-180).max(180),  // nome real no CSV
+  lon:          z.coerce.number().min(-180).max(180),
   speed_kmh:    z.coerce.number().min(0),
   nserie_item:  z.string().default(''),
 })
 
-// ── Normaliza para o tipo interno TelemetryRow ────────────────────
-function toTelemetryRow(raw: z.infer<typeof RowSchema>): TelemetryRow {
+// ── Schema: totalizador (tipoArquivo=1) ───────────────────────────
+const TotRowSchema = z.object({
+  timestamp:       z.string().min(1),
+  serial:          z.string().min(1),
+  totalizer_hours: z.coerce.number().min(0),
+})
+
+function toTelemetryRow(raw: z.infer<typeof TrackRowSchema>): TelemetryRow {
   return {
     timestamp:    raw.timestamp,
     numero_serie: raw.serial,
@@ -26,43 +32,70 @@ function toTelemetryRow(raw: z.infer<typeof RowSchema>): TelemetryRow {
   }
 }
 
-export interface ParseResult {
-  rows:   TelemetryRow[]
-  errors: Array<{ line: number; reason: string }>
+function toTotalizerRow(raw: z.infer<typeof TotRowSchema>): TotalizerRow {
+  return {
+    timestamp:       raw.timestamp,
+    serial:          raw.serial,
+    totalizer_hours: raw.totalizer_hours,
+  }
 }
 
-// ── Parseia um Buffer CSV e retorna linhas válidas + erros ────────
-export async function parseTelemetryCsv(buffer: Buffer): Promise<ParseResult> {
+export interface ParseResult {
+  tipo_arquivo: number
+  rows:         TelemetryRow[] | TotalizerRow[]
+  errors:       Array<{ line: number; reason: string }>
+}
+
+// ── Parseia o CSV e detecta o tipo pelo cabeçalho ─────────────────
+export async function parseTelemetryCsv(
+  buffer:      Buffer,
+  tipoArquivo: number,
+): Promise<ParseResult> {
   return new Promise((resolve, reject) => {
-    const rows:   TelemetryRow[]                    = []
-    const errors: Array<{ line: number; reason: string }> = []
-    let lineNumber = 1 // começa em 1 (header é linha 0)
+    const rows:   (TelemetryRow | TotalizerRow)[]          = []
+    const errors: Array<{ line: number; reason: string }>  = []
+    let lineNumber = 1
 
     const parser = parse({
-      columns:           true,   // usa primeira linha como header
-      skip_empty_lines:  true,
-      trim:              true,
-      bom:               true,   // ignora BOM se existir
+      columns:          true,
+      skip_empty_lines: true,
+      trim:             true,
+      bom:              true,
     })
 
     parser.on('readable', () => {
       let record
       while ((record = parser.read()) !== null) {
         lineNumber++
-        const parsed = RowSchema.safeParse(record)
-        if (parsed.success) {
-          rows.push(toTelemetryRow(parsed.data))
+
+        if (tipoArquivo === 1) {
+          // ── Totalizador ──────────────────────────────────────
+          const parsed = TotRowSchema.safeParse(record)
+          if (parsed.success) {
+            rows.push(toTotalizerRow(parsed.data))
+          } else {
+            errors.push({
+              line:   lineNumber,
+              reason: parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join('; '),
+            })
+          }
         } else {
-          errors.push({
-            line:   lineNumber,
-            reason: parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join('; '),
-          })
+          // ── Trilha GPS (padrão) ──────────────────────────────
+          const parsed = TrackRowSchema.safeParse(record)
+          if (parsed.success) {
+            rows.push(toTelemetryRow(parsed.data))
+          } else {
+            errors.push({
+              line:   lineNumber,
+              reason: parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join('; '),
+            })
+          }
         }
       }
     })
 
     parser.on('error', reject)
-    parser.on('end',   () => resolve({ rows, errors }))
+    parser.on('end',   () => resolve({ tipo_arquivo: tipoArquivo, rows, errors }))
 
     Readable.from(buffer).pipe(parser)
   })

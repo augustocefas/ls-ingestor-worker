@@ -126,9 +126,9 @@ async function insertTrackBatch(
   const values: unknown[] = []
 
   for (const row of batch) {
-    // Converte timestamp do CSV para Unix timestamp em segundos
-    const unixSeconds = Math.floor(new Date(row.timestamp).getTime() / 1000)
-    values.push(equipamento_id, row.lat, row.lng, row.speed_kmh, unixSeconds, unixSeconds)
+    // Converte timestamp do CSV para objeto Date (compatível com colunas TIMESTAMP do MySQL)
+    const dateObj = new Date(row.timestamp)
+    values.push(equipamento_id, row.lat, row.lng, row.speed_kmh, dateObj, dateObj)
   }
 
   await tenantDb.$executeRawUnsafe(

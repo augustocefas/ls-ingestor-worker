@@ -1,12 +1,26 @@
 // src/workers/telemetryWorker.ts
 import { Worker, Job } from 'bullmq'
 import { randomUUID } from 'node:crypto'
+import { appendFileSync } from 'node:fs'
 import { PrismaClient } from '@prisma/client'
 import { getCentralDb, getTenantDb } from '../db'
 import { getLogDb } from '../db/logDb'
 import { redisConnection } from '../jobs/telemetryQueue'
 import { config } from '../config'
 import type { TelemetryJobPayload, JobResult, TelemetryRow, TotalizerRow } from '../types'
+
+// ── Funçao auxiliar para log em arquivo ───────────────────────────
+function logToFile(message: string) {
+  if (!config.debugSql) return
+
+  const timestamp = new Date().toISOString()
+  const logLine = `[${timestamp}] ${message}\n`
+  try {
+    appendFileSync('sql_debug.log', logLine)
+  } catch (err) {
+    console.error('Falha ao escrever no log_debug.log:', err)
+  }
+}
 
 // ── Processador principal ─────────────────────────────────────────
 async function processTelemetryJob(
@@ -87,16 +101,16 @@ async function processTrack(
   tenant_id:      string,
   rows:           TelemetryRow[],
 ): Promise<JobResult> {
-  const { upload_id } = job.data
+  const { upload_id, tenant_db_url } = job.data
   let rows_ok  = 0
   let rows_err = 0
   const errors: string[] = []
-  const BATCH_SIZE = 500
+  const BATCH_SIZE = 100 // Reduzi para 100 para evitar limites de parâmetros
 
   for (let i = 0; i < rows.length; i += BATCH_SIZE) {
     const batch = rows.slice(i, i + BATCH_SIZE)
     try {
-      await insertTrackBatch(tenantDb, equipamento_id, batch)
+      await insertTrackBatch(tenantDb, equipamento_id, batch, upload_id, tenant_db_url)
       rows_ok += batch.length
     } catch (err) {
       rows_err += batch.length
@@ -122,6 +136,8 @@ async function insertTrackBatch(
   tenantDb:       PrismaClient,
   equipamento_id: string,
   batch:          TelemetryRow[],
+  upload_id:      string,
+  tenant_db_url:  string,
 ): Promise<void> {
   // Agora usamos apenas ? para todos os campos, incluindo o ID gerado no JS
   const placeholders = batch.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(', ')
@@ -145,7 +161,9 @@ async function insertTrackBatch(
     )
   }
 
-  console.log(`[Worker] Tentando inserir ${batch.length} linhas para equipamento_id: ${equipamento_id}`)
+  logToFile(`[Worker] ${upload_id} — Iniciando processamento de TRACK. Equipamento: ${equipamento_id} | Banco: ${tenant_db_url}`)
+  logToFile(`[Worker] SQL: INSERT INTO equipamento_mov (id, equipamento_id, latitude, longitude, data_float_0, created_at, updated_at) VALUES ${placeholders}`)
+  logToFile(`[Worker] PARAMS (primeiros 10): ${JSON.stringify(values.slice(0, 10))}`)
 
   try {
     const result = await tenantDb.$executeRawUnsafe(
@@ -155,8 +173,10 @@ async function insertTrackBatch(
       ...values,
     )
     console.log(`[Worker] Sucesso: ${result} linhas afetadas no banco.`)
+    logToFile(`[Worker] SUCESSO NO BANCO: ${result} linhas inseridas.`)
   } catch (err) {
     console.error('[Worker] ERRO FATAL NO BATCH INSERT:', err)
+    logToFile(`[Worker] ERRO NO BANCO: ${err instanceof Error ? err.message : String(err)}`)
     throw err
   }
 }

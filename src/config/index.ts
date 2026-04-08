@@ -35,4 +35,6 @@ export const config = {
   queues: {
     telemetry: 'telemetry-ingest',
   },
+  
+  debugSql: process.env.DEBUG_SQL === 'true',
 } as const

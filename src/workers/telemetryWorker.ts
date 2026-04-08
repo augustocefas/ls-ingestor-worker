@@ -2,6 +2,7 @@
 import { Worker, Job } from 'bullmq'
 import { randomUUID } from 'node:crypto'
 import { appendFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { PrismaClient } from '@prisma/client'
 import { getCentralDb, getTenantDb } from '../db'
 import { getLogDb } from '../db/logDb'
@@ -16,11 +17,15 @@ function logToFile(message: string) {
   const timestamp = new Date().toISOString()
   const logLine = `[${timestamp}] ${message}\n`
   try {
-    appendFileSync('sql_debug.log', logLine)
+    const logPath = join(process.cwd(), 'sql_debug.log')
+    appendFileSync(logPath, logLine)
   } catch (err) {
-    console.error('Falha ao escrever no log_debug.log:', err)
+    console.error('Falha ao escrever no sql_debug.log:', err)
   }
 }
+
+// ── Log de inicialização para teste de escrita ────────────────────
+logToFile(`[SISTEMA] Worker iniciado - Modo Debug SQL: ${config.debugSql}`)
 
 // ── Processador principal ─────────────────────────────────────────
 async function processTelemetryJob(

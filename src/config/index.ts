@@ -38,3 +38,6 @@ export const config = {
   
   debugSql: process.env.DEBUG_SQL === 'true',
 } as const
+
+console.log(`[CONFIG] DEBUG_SQL detectado no .env: ${process.env.DEBUG_SQL}`)
+console.log(`[CONFIG] Flag config.debugSql: ${config.debugSql}`)

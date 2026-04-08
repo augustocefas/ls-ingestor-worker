@@ -24,14 +24,15 @@ function logToFile(message: string) {
   }
 }
 
-// ── Log de inicialização para teste de escrita ────────────────────
-logToFile(`[SISTEMA] Worker iniciado - Modo Debug SQL: ${config.debugSql}`)
-
 // ── Processador principal ─────────────────────────────────────────
 async function processTelemetryJob(
   job: Job<TelemetryJobPayload>,
 ): Promise<JobResult> {
   const { upload_id, nserie, tenant_id, tenant_db_url, tipo_arquivo, rows } = job.data
+
+  if (config.debugSql) {
+    console.log(`[DEBUG] 📥 Recebido Job ${upload_id} | Equipamento: ${nserie} | Tipo: ${tipo_arquivo} | Linhas: ${rows.length}`)
+  }
 
   console.log(`[Worker] Job ${upload_id} | nserie=${nserie} | tipo=${tipo_arquivo} | ${rows.length} linhas`)
 
@@ -53,9 +54,17 @@ async function processTelemetryJob(
 
   // ── Roteia pelo tipo de arquivo ───────────────────────────────
   if (tipo_arquivo === 1) {
-    return processTotalizer(job, tenantDb, equipamento_id, tenant_id, rows as TotalizerRow[])
+    const res = await processTotalizer(job, tenantDb, equipamento_id, tenant_id, rows as TotalizerRow[])
+    if (config.debugSql) {
+      console.log(`[DEBUG] ✅ Job ${upload_id} (TOTALIZADOR) finalizado com sucesso.`)
+    }
+    return res
   }
-  return processTrack(job, tenantDb, equipamento_id, tenant_id, rows as TelemetryRow[])
+  const res = await processTrack(job, tenantDb, equipamento_id, tenant_id, rows as TelemetryRow[])
+  if (config.debugSql) {
+    console.log(`[DEBUG] ✅ Job ${upload_id} (TRACK) finalizado com sucesso.`)
+  }
+  return res
 }
 
 // ── Processa totalizador (tipoArquivo=1) ──────────────────────────
@@ -216,6 +225,10 @@ async function updateJobLog(
 
 // ── Instancia o Worker ────────────────────────────────────────────
 export function createTelemetryWorker() {
+  const logPath = join(process.cwd(), 'sql_debug.log')
+  console.log(`[SISTEMA] Tentando gravar log em: ${logPath}`)
+  logToFile(`[SISTEMA] Worker instanciado - Modo Debug SQL: ${config.debugSql}`)
+
   const worker = new Worker<TelemetryJobPayload, JobResult>(
     config.queues.telemetry,
     processTelemetryJob,

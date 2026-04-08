@@ -1,5 +1,6 @@
 // src/workers/telemetryWorker.ts
 import { Worker, Job } from 'bullmq'
+import { randomUUID } from 'node:crypto'
 import { PrismaClient } from '@prisma/client'
 import { getCentralDb, getTenantDb } from '../db'
 import { getLogDb } from '../db/logDb'
@@ -122,21 +123,42 @@ async function insertTrackBatch(
   equipamento_id: string,
   batch:          TelemetryRow[],
 ): Promise<void> {
-  const placeholders = batch.map(() => '(UUID(), ?, ?, ?, ?, ?, ?)').join(', ')
+  // Agora usamos apenas ? para todos os campos, incluindo o ID gerado no JS
+  const placeholders = batch.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(', ')
   const values: unknown[] = []
 
   for (const row of batch) {
+    // Geramos o UUID no lado do servidor para evitar conflitos com funções SQL em raw query
+    const id = randomUUID()
+    
     // Converte timestamp do CSV para objeto Date (compatível com colunas TIMESTAMP do MySQL)
     const dateObj = new Date(row.timestamp)
-    values.push(equipamento_id, row.lat, row.lng, row.speed_kmh, dateObj, dateObj)
+    
+    values.push(
+      id,
+      equipamento_id,
+      row.lat,
+      row.lng,
+      row.speed_kmh,
+      dateObj,
+      dateObj
+    )
   }
 
-  await tenantDb.$executeRawUnsafe(
-    `INSERT INTO equipamento_mov
-       (id, equipamento_id, latitude, longitude, data_float_0, created_at, updated_at)
-     VALUES ${placeholders}`,
-    ...values,
-  )
+  console.log(`[Worker] Tentando inserir ${batch.length} linhas para equipamento_id: ${equipamento_id}`)
+
+  try {
+    const result = await tenantDb.$executeRawUnsafe(
+      `INSERT INTO equipamento_mov
+         (id, equipamento_id, latitude, longitude, data_float_0, created_at, updated_at)
+       VALUES ${placeholders}`,
+      ...values,
+    )
+    console.log(`[Worker] Sucesso: ${result} linhas afetadas no banco.`)
+  } catch (err) {
+    console.error('[Worker] ERRO FATAL NO BATCH INSERT:', err)
+    throw err
+  }
 }
 
 // ── Atualiza JobLog no MySQL de logs ──────────────────────────────
